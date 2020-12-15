@@ -32,6 +32,9 @@
 #include "json.h"
 
 
+
+
+
 /************************************************************************
  *                                                                      *
  *    JSON printing                                                     *
@@ -278,7 +281,8 @@ int JSON_num(FILE *str, double *num)
     if (!(c=='-' || (c>='0' && c<='9')))
     {
         //  It was not a number
-        ungetc(c, str);
+        if (c!=EOF)
+            ungetc(c, str);
         return(n);
     }
 
@@ -444,7 +448,7 @@ int JSON_symbol(FILE *str, int *sym)
 
         (*sym)=JSON_SYM_NULL;
     }
-    else
+    else if (c!=EOF)
         ungetc(c, str);
 
     return(n);
@@ -460,7 +464,7 @@ int JSON_value(FILE *str, int rank, int depth, int (*callback)(int cmd, int r, i
     
     n=0;
     m=0;
-    n+=JSON_ws(stdin);
+    n+=JSON_ws(str);
 
     //  Try string first:
     //  (m is oviously '0' still)
@@ -522,7 +526,7 @@ int JSON_value(FILE *str, int rank, int depth, int (*callback)(int cmd, int r, i
 
     //  Find something?  Or error?
     if (m>0)
-        n+=JSON_ws(stdin);
+        n+=JSON_ws(str);
     else if (m<0)
         n=m;
     else
@@ -566,7 +570,7 @@ int JSON_array(FILE *str, int rank, int depth, int (*callback)(int cmd, int r, i
         callback(JSON_CMD_END_ARRAY, rank, depth, NULL, 0.0, user);
         return(n);
     }
-    else
+    else if (c!=EOF)
         ungetc(c, str);
 
     //  While there's no more brackets:
@@ -648,7 +652,7 @@ int JSON_object(FILE *str, int rank, int depth, int (*callback)(int cmd, int r, 
         n+=1;
         return(n);
     }
-    else
+    else if (c!=EOF)
         ungetc(c, str);
 
     //  While there's no more brackets:
@@ -674,7 +678,7 @@ int JSON_object(FILE *str, int rank, int depth, int (*callback)(int cmd, int r, 
             n+=JSON_ws(str);
 
             //  The separator:
-            c=getc(str);
+            c=fgetc(str);
             if (c!=':')
                 return(JSON_ERR_SEP);
             n+=1;
