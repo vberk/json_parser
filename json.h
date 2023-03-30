@@ -27,7 +27,7 @@
 
 
 /*
- *  Parse and store JSON.
+ *  Parse, store, flatten, and operate directly on JSON.
  *
  *  The basic parser is stateless, meaning, it just calls a callback for
  *  each value and object/array it finds, and leave it up to the application
@@ -42,12 +42,16 @@
  *  upon in an application.
  *
  *  All reading/parsing is done from a stream, which might be 'stdin',
- *  or could be any opened file.  Methods are not re-entrant because
- *  of the use of 'getc' and 'ungetc'.  The parser calls a callback for
- *  new objects, and items found.
+ *  or could be any opened file.  Methods are not re-entrant on a single
+ *  stream because *  of the use of 'getc' and 'ungetc'.  The parser calls
+ *  a callback for new objects, and items found.
  *
- *  Although the parser is intrinsically stateless, a memory-resident callback
- *  method is offered below, for parsing the structure to memory.
+ *  Flatten and unflatten can be used directly in the parser stream, or using
+ *  the 'walk' method for stored objects.  Manipulation, such as adding,
+ *  updating, deleting, and retrieval are all done only on memory-resident
+ *  JSON representation.
+ *
+ *  For any manipulation a basic query language is provided.
  *
  */
 
@@ -78,6 +82,7 @@
 #define JSON_ERR_OBJ    -8         //  Missing a ','
 #define JSON_ERR_SEP    -9         //  Missing a ':'
 #define JSON_ERR_MEM   -10         //  Out of memory
+#define JSON_ERR_DEPTH -11         //  Too many levels of nesting
 
 //  The predefined symbols:
 #define JSON_SYM_TRUE    1
@@ -114,7 +119,18 @@
 //  the method quits, although additional values may
 //  exist in the stream.  Additional calls will be needed.
 //
+//  Callback methods are provided with the follwing:
+//    cmd:  one of JSON_CMD_* -- although provided as flags, only one will ever be set
+//    r:    rank of value, starting from 0, in array or object
+//          Note:  rank is set for the value ietself in an array, but for an
+//          object, rank is only set for the OLBL, while the value is of rank 0
+//    d:    depth of nesting
+//    s:    string, either for the OLBL (object label), or as a value (VAL_OLBL vs. VAL_STR)
+//    n:    numerical value VAL_NUM or symbol VAL_SYM
+//    user: the user pointer provided as void* user
+//
 //  See below for an example 'callback' method: 'JSON_print'
+//  To parse from a memory region, simply use: 'fmemopen(buf, len, "r")'
 //
 int JSON_parse(FILE *str, int (*callback)(int cmd, int r, int d, char *s, double n, void *user), void *user);
 
@@ -124,7 +140,7 @@ int JSON_parse(FILE *str, int (*callback)(int cmd, int r, int d, char *s, double
 //  any whitespace.  Since it is completely stateless, it takes practically
 //  no memory.
 //
-//  'cmd':   one of JSON_CMD
+//  'cmd':   one of JSON_CMD_*
 //  'r':     the rank of the item in a list or object (ie. r>0 means a comma is printed first)
 //  'd':     the nesting depth, for pretty-print indentation
 //  's':     a string (might be an object label, or a string value)
@@ -156,6 +172,29 @@ int JSON_prettyPrint(int cmd, int r, int d, char *s, double n, void *user);
 
 
 
+/************************************************************************
+ *                                                                      *
+ *    Flatten and un-flatten                                            *
+ *                                                                      *
+ ************************************************************************/
+
+//  
+//  Flatten print method:
+//  Can be given to 'walk' (in memory) or to 'parse' (input stream)
+//
+typedef struct
+{
+    FILE *str;                       //  Stream to be printed to
+    char *strStack[JSON_MAX_DEPTH];  //  Pointers to the field names
+    int index[JSON_MAX_DEPTH];       //  Array index
+}
+JSON_FLATTEN_CONF;
+
+
+int JSON_flattenPrint(int cmd, int r, int d, char *s, double n, void *user);
+int JSON_flattenParse(FILE *str, int (*callback)(int cmd, int c, int d, char *s, double n, void *user), void *user);
+
+
 
 
 /************************************************************************
@@ -175,10 +214,15 @@ int JSON_prettyPrint(int cmd, int r, int d, char *s, double n, void *user);
 //
 //  After the data has been read into the memory structure,
 //  it can be searched, modified, and printed again.
+//  A properly formatted object either has 'obj' pointing to
+//  a compound object/array where the 'child' pointer is valid,
+//  or a singular value.  There is NEVER a 'next' pointer for the
+//  toplevel node.
 //
 //  Memory is allocated in chunks of 'JSON_NODE's and also
 //  in swatchs of 'char'.  All memory is freed upon the call
-//  to the destructor.
+//  to the destructor.  Strings are stored linearly in chunks,
+//  but duplicates strings are not tracked and simply stored twice.
 //
 
 #define JSON_ALLOC_CNT_NODE 128     //  A node is 32 byte, so this allocated at 4kb each
@@ -198,7 +242,7 @@ typedef struct JSON_NODE_S
 
     //  A label, if this is an item in an object:
     char *label;
-    int8_t f;
+    int8_t f;   //  General flags.
 
     //  The value, only 1 is used:
     union
@@ -216,7 +260,8 @@ JSON_NODE;
 //  a string is written, the block with the least free space is used
 //  (as long as the string fits).   Stored as a linked list,
 //  insert-sorted by size left over, smallest first.  Objects with
-//  less than the  low water mark (24 chars left) are taken out.
+//  less than the low water mark (24 chars left) are taken out.
+//  Note that strings are not de-deplicated upon read.
 #define JSON_STRING_RETIREMENT 24
 typedef struct JSON_STRING_S
 {
@@ -241,7 +286,7 @@ typedef struct
     JSON_STRING *usedStrings;       //  Not enough space left in these.
 
     //  The actual parsed object:
-    JSON_NODE *obj;
+    JSON_NODE *obj;                 //  Either singular, or compound, but cannot have '->next'
 }
 JSON_STRUCT;
 
@@ -259,6 +304,12 @@ void JSON_flush(JSON_STRUCT *j);
 void JSON_destroy(JSON_STRUCT *j);
 
 
+//  Cloning can be helpful after a slew of operations has left
+//  strings unreferenced, and unused, but allocated, nodes.
+//  Returns a full struct with the same configu as 'j'.
+JSON_STRUCT *JSON_clone(JSON_STRUCT *j);
+
+
 //  Method to read to memory. 
 //  Pass this method to 'JSON_parse', where
 //  the 'user' pointer must be a JSON_STRUCT*.
@@ -266,14 +317,165 @@ int JSON_read(int cmd, int r, int d, char *s, double n, void *user);
 
 //  Walks the memory structure, given a callback, such
 //  as the 'JSON_prettyPrint' method to print the memory
-//  resident JSON structure:
+//  resident JSO/N structure:
+//      JSON_walk(j, JSON_prettyPrint, (void*) &c);
 void JSON_walk(JSON_STRUCT *j, int (*callback)(int cmd, int c, int d, char *s, double n, void *user), void *user);
 
 
 
 
 
+/************************************************************************
+ *                                                                      *
+ *    Searching and manipulating                                        *
+ *                                                                      *
+ ************************************************************************/
 
+
+
+
+// 
+//  Queries in JSON, by example:
+// 
+//    { "a" : true, "b" : [ 1, 2], "c" : { "d" : 3, "e" : "three"  } }
+// 
+//   "a" -- true
+//   "c.e" -- "three"
+//   "*.d" -- 3
+//   "c.*" -- [ 3, "three" ]
+//   "c"   -- { "d" : 3, "e" : "three"  } 
+//   "b"   -- [ 1, 2]
+//   "b[0]" -- 1        (equivalent to b.[0])
+//   "b[*]" -- 1, 2     (callback or operation performed twice)
+// 
+
+
+
+//
+//  Representation of a query:
+//
+typedef struct
+{
+    int top;                        //  Current label stack depth
+    char labelSpace[JSON_MAX_LEN];  //  This is the current label stack
+    char *labels[JSON_MAX_DEPTH];   //  Starting position in the label stack 'l'
+    int8_t types[JSON_MAX_DEPTH];   //  Type of object (JSON_FLG_OBJ or JSON_FLG_ARR)
+    int ranks[JSON_MAX_DEPTH];      //  Counts the number of elements in an object or array
+}
+JSON_QUERY;
+
+
+//  Parses a textual query and fills in 'q'
+//  Query 'q' can be used with the methods below to update/delete/insert or retrieve.
+int JSON_queryParse(char *qStr, JSON_QUERY *q);
+
+
+
+
+    //
+    //  These are the create/retrieve/update/delete primitives.
+    //
+
+//  Retrieval, uses query 'q' to retrieve all objects matching the
+//  query which may have wildcards.  Note that the callback may
+//  return compound objects/arrays which should NOT be modified.
+void JSON_retrieve(JSON_STRUCT *j, JSON_QUERY *q, void (*callback)(JSON_NODE *n, void *user), void *user);
+
+//
+//  IMPORTANT:  when adding/inserting/updating the new node(s) 'n' must have either:
+//  1)  Their strings allocated in 'j' (use 'JSON_newString'), OR:
+//  2)  Their strings may be external but MUST persist byond the lifetime of 'j'
+//
+//  The new nodes 'n' are cloned upon adding into the object under 'j', therefore
+//  they themselves may be flushed or deallocated after the operation completes.
+//
+//  Updating and adding of 'n' to an array then 'n' must NOT have a label set.
+//  When manipulating an object that 'n' does need a label set, unless:
+//  Query 'q' exactly matches one label, and 'n' is unlabelled, in this case
+//  the value is updated for the matched label.  This works for 'update' only.
+//
+//  Append stores after the matched items.
+//  Insert stores before the matched items.
+//  Update replaces the matched items.
+//
+void JSON_append(JSON_STRUCT *j, JSON_QUERY *q, JSON_NODE *n);
+void JSON_insert(JSON_STRUCT *j, JSON_QUERY *q, JSON_NODE *n);
+void JSON_update(JSON_STRUCT *j, JSON_QUERY *q, JSON_NODE *n);
+
+
+//  Flushes ALL nodes, including objects and arrays, that match the query 'q'
+//  Note that strings remain allocated in 'j'.  When a lot of string space
+//  is lost this way then simply clone 'j'.
+void JSON_delete(JSON_STRUCT *j, JSON_QUERY *q);
+
+
+//  Gets the last element of an object or array, if it exists
+//  Returns the count of child objects  at the query location.
+int JSON_getObjectSize(JSON_STRUCT *j, JSON_QUERY *q, JSON_NODE **lastNode);
+
+
+
+/************************************************************************
+ *                                                                      *
+ *    Simplified manipulation                                           *
+ *                                                                      *
+ ************************************************************************/
+
+//  These methods are simplified derivatives of the 'append/update/delete'
+//  above and much more convenient to use.  They are not extremely efficient
+//  however as each step of the path invokes a retrieve operation.
+//  The 'path' is identical to the JSON queries above, but may NOT contain
+//  wildcards like '*'.  (ie. each path must match exactly zero or one object).
+
+
+//  Return codes for these methods:
+#define JSON_RC_PARSE       -1      //  Unable to parse the path
+#define JSON_RC_NOTFOUND    -2      //  Object at path not found
+#define JSON_RC_ALLOC       -3      //  Allocation or space error ('val' too small?)
+#define JSON_RC_WILDCARD    -4      //  The path contained wildcards (not valid here)
+#define JSON_RC_COMPOUND    -5      //  The object to be set was compound (must be singular)
+#define JSON_RC_STRING       0      //  Success: value is string
+#define JSON_RC_NUM          1      //  Success: value is numeric
+#define JSON_RC_BOOL         2      //  Success: value is boolean
+
+
+//  Singular value.  Values are always returned as strings.
+//  Upon 'set' if a value is 'true/false' or a number it will
+//  be stored as such properly (ie. not as a string)
+int JSON_getval(JSON_STRUCT *j, char *path, char *val, int len);
+int JSON_setval(JSON_STRUCT *j, char *path, char *val);
+int JSON_clrval(JSON_STRUCT *j, char *path);
+
+
+
+/************************************************************************
+ *                                                                      *
+ *  Some useful but internal stuff:                                     *
+ *                                                                      *
+ ************************************************************************/
+
+
+
+
+//  Some internal methods:
+JSON_NODE *JSON_newNode(JSON_STRUCT *j);
+char *JSON_newString(JSON_STRUCT *j, int len);
+
+//  Note for these two methods:  as given node 'n' can be part of a compound
+//  object or array 'n->next' MIGHT be valid and pointing to another node.
+//  This node is NOT flushed or copied, instead:
+//    1) For 'flush' (*n).next is RETURNED
+//    2) For 'clone' (*n).next is set to NULL
+JSON_NODE *JSON_flushObject(JSON_STRUCT *j, JSON_NODE *n);
+JSON_NODE *JSON_cloneObject(JSON_STRUCT *j, JSON_NODE *n, JSON_STRUCT *k);
+
+//  The actual execution of the query that performs the work:
+#define JSON_QUERY_GET  0   //  Retrieve the match
+#define JSON_QUERY_ADD  1   //  Append after match
+#define JSON_QUERY_INS  2   //  Insert before match
+#define JSON_QUERY_DEL  3   //  Delete the match
+#define JSON_QUERY_UPD  4   //  Raplce the match
+JSON_NODE *JSON_queryExecuteRecursive(JSON_STRUCT *j, JSON_QUERY *q, int d, JSON_NODE *n, JSON_NODE **p, u_int8_t type, int cmd, JSON_NODE *new, void (*callback)(JSON_NODE *n, void *user), void *user);
 
 
 
