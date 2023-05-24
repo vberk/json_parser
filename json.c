@@ -2584,7 +2584,7 @@ int JSON_setvalMakeNode(JSON_STRUCT *j, JSON_NODE *n, char *val)
         //  Try to parse a number:
         char *endptr;
         (*n).value.num=strtod(val, &endptr);
-        if (endptr!=val)
+        if (endptr==val+strlen(val))
             (*n).f|=JSON_FLG_NUM;
         else
         {
