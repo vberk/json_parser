@@ -2444,6 +2444,16 @@ int JSON_getObjectSize(JSON_STRUCT *j, JSON_QUERY *q, JSON_NODE **lastNode)
     (*q).labels[(*q).top]=label;
     (*q).ranks[(*q).top]=rank;
 
+    //  If the object/array was empty, instead return the parent:
+    if (s.count==0)
+    {
+        (*q).top-=1;
+        JSON_retrieve(j, q, JSON_getObjectSizeCallback, (void*) &s);
+        //(*lastNode)=s.lastNode;
+        s.count=0;      //  Reset
+        (*q).top+=1;    //  Restore
+    }
+
     //  And the rest:
     (*lastNode)=s.lastNode;
     return(s.count);
@@ -2693,11 +2703,11 @@ int JSON_setval(JSON_STRUCT *j, char *path, char *val)
                     q.labels[i]=(*lastNode).label;
                 JSON_append(j, &q, &m[0]);
             }
-            else if (i==0)
+            else if (q.ranks[i]==-1)
             {
-                //  Special case where we just made the top node.
-                JSON_NODE *p=(*j).obj;
-                (*p).value.child=JSON_cloneObject(j, &m[0], j);
+                //  In this case the object was empty, and 'lastNode' returned
+                //  is the parent, hence must add to the 'child'
+                (*lastNode).value.child=JSON_cloneObject(j, &m[0], j);
             }
             else
                 rc=JSON_RC_NOTFOUND;

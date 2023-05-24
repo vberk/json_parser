@@ -411,6 +411,10 @@ void JSON_delete(JSON_STRUCT *j, JSON_QUERY *q);
 
 //  Gets the last element of an object or array, if it exists
 //  Returns the count of child objects  at the query location.
+//  NOTE:  if the object or array is EMPTY (ie. rc=0) then 'lastNode'
+//  points to the PARENT.  When adding objects:
+//    rc>0    (*lastNode).next=newObject (ie. sequence continues)
+//    rc==0   (*lastNode).value.child=newObject (ie. the first child)
 int JSON_getObjectSize(JSON_STRUCT *j, JSON_QUERY *q, JSON_NODE **lastNode);
 
 
