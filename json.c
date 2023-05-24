@@ -2691,8 +2691,13 @@ int JSON_setval(JSON_STRUCT *j, char *path, char *val)
             {
                 if ((*lastNode).label)
                     q.labels[i]=(*lastNode).label;
-
                 JSON_append(j, &q, &m[0]);
+            }
+            else if (i==0)
+            {
+                //  Special case where we just made the top node.
+                JSON_NODE *p=(*j).obj;
+                (*p).value.child=JSON_cloneObject(j, &m[0], j);
             }
             else
                 rc=JSON_RC_NOTFOUND;
