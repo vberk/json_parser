@@ -60,10 +60,11 @@
 
 
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/types.h>
+//#include <stdio.h>
+//#include <stdlib.h>
+//#include <string.h>
+//#include <sys/types.h>
+#include "platform.h"
 
 
 //  Symbols, values, numbers, all must be less than 8K characters.
@@ -133,6 +134,7 @@
 //  To parse from a memory region, simply use: 'fmemopen(buf, len, "r")'
 //
 int JSON_parse(FILE *str, int (*callback)(int cmd, int r, int d, char *s, double n, void *user), void *user);
+int JSON_parseMem(char *buf, int len, int (*callback)(int cmd, int r, int d, char *s, double n, void *user), void *user);
 
 
 //
@@ -170,6 +172,23 @@ void JSON_prettyPrintInit(JSON_PRETTYPRINT_CONF *c, FILE *str);
 int JSON_prettyPrint(int cmd, int r, int d, char *s, double n, void *user);
 
 
+//
+//  And once more the same, but this time printing to a character buffer:
+//
+typedef struct
+{
+    char *buf;
+    int len;
+    int pos;
+}
+JSON_SNPRINT_CONF;
+
+void JSON_snprintInit(JSON_SNPRINT_CONF *c, char *buf, int len);
+int JSON_snprint(int cmd, int r, int d, char *s, double n, void *user);
+
+
+
+
 
 
 /************************************************************************
@@ -178,21 +197,37 @@ int JSON_prettyPrint(int cmd, int r, int d, char *s, double n, void *user);
  *                                                                      *
  ************************************************************************/
 
-//  
-//  Flatten print method:
-//  Can be given to 'walk' (in memory) or to 'parse' (input stream)
+//
+//  Memset to zero, and set:
+//  EITHER:  'str'
+//  OR:      'buf' an 'len'
 //
 typedef struct
 {
+    //  What we are outputting to:
     FILE *str;                       //  Stream to be printed to
+    char *buf;                       //  Or a char buf
+    int len;
+    int pos;
+    //  Bookkeeping:
     char *strStack[JSON_MAX_DEPTH];  //  Pointers to the field names
     int index[JSON_MAX_DEPTH];       //  Array index
+    int rc;                          //  If there was any error
 }
 JSON_FLATTEN_CONF;
 
+//  Use this to quickly initialize:
+int JSON_flattenPrintInit(JSON_FLATTEN_CONF *c, FILE *str, char *buf, int len);
 
+
+//  
+//  Flatten print method:
+//  Can be given to 'walk' (in memory) or to 'parse' (input stream)
+//  'Print' needs a JSON_FLATTEN_CONF as the 'user' pointer:
+//
 int JSON_flattenPrint(int cmd, int r, int d, char *s, double n, void *user);
 int JSON_flattenParse(FILE *str, int (*callback)(int cmd, int c, int d, char *s, double n, void *user), void *user);
+int JSON_flattenParseMem(char *buf, int len, int (*callback)(int cmd, int c, int d, char *s, double n, void *user), void *user);
 
 
 

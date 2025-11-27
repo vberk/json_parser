@@ -112,7 +112,132 @@ int JSON_print(int cmd, int r, int d, char *s, double n, void *user)
 }
 
 
+
+//
+//  Method for printing compactly to a memory buffer 'snprintf' style:
+//  This is identical to FILE stream printing above.
+//
+
+void JSON_snprintInit(JSON_SNPRINT_CONF *c, char *buf, int len)
+{
+    if (c==NULL) return;
+    (*c).buf=buf;
+    (*c).len=len;
+    (*c).pos=0;
+    return;
+}
+
+int JSON_snprint(int cmd, int r, int d, char *s, double n, void *user)
+{
+    JSON_SNPRINT_CONF *c=(JSON_SNPRINT_CONF*)user;
+    int rc=0;
+    
+    //  In these cases, a comma-separator is needed before the next value:
+    //  Except if the previous call was an object label.  In this case the rank
+    //  is r=0 as values following an OLBL are always ranked '0'.
+    if (r>0 && cmd&(JSON_CMD_NEW_ARRAY|JSON_CMD_NEW_OBJ|JSON_CMD_VAL_OLBL|JSON_CMD_VAL_NUM|JSON_CMD_VAL_STR|JSON_CMD_VAL_SYM))
+    {
+        rc=snprintf(&(*c).buf[(*c).pos], (*c).len-(*c).pos, ",");
+        if (rc<0)
+            return(-1);
+        (*c).pos+=rc;
+    }   
+
+    //  All possible commands:
+    if (cmd&JSON_CMD_NEW_ARRAY)
+    {
+        rc=snprintf(&(*c).buf[(*c).pos], (*c).len-(*c).pos, "[");
+        if (rc<0)
+            return(-1);
+        (*c).pos+=rc;
+    }
+    if (cmd&JSON_CMD_NEW_OBJ)
+    {
+        rc=snprintf(&(*c).buf[(*c).pos], (*c).len-(*c).pos, "{");
+        if (rc<0)
+            return(-1);
+        (*c).pos+=rc;
+    }
+    if (cmd&JSON_CMD_VAL_OLBL)
+    {
+        rc=snprintf(&(*c).buf[(*c).pos], (*c).len-(*c).pos, "\"%s\":", s);
+        if (rc<0)
+            return(-1);
+        (*c).pos+=rc;
+    }
+    if (cmd&JSON_CMD_VAL_NUM)
+    {
+        //  Rudimentary 'floor' method to see if the value is true 'int'
+        if ((double)((long long int)n)==n)
+        {
+            rc=snprintf(&(*c).buf[(*c).pos], (*c).len-(*c).pos, "%lli", (long long int) n);
+            if (rc<0)
+                return(-1);
+            (*c).pos+=rc;
+        }
+        else
+        {
+            rc=snprintf(&(*c).buf[(*c).pos], (*c).len-(*c).pos, "%f", n);
+            if (rc<0)
+                return(-1);
+            (*c).pos+=rc;
+        }
+    }
+    if (cmd&JSON_CMD_VAL_STR)
+    {
+        rc=snprintf(&(*c).buf[(*c).pos], (*c).len-(*c).pos, "\"%s\"", s);
+        if (rc<0)
+            return(-1);
+        (*c).pos+=rc;
+    }
+    if (cmd&JSON_CMD_VAL_SYM)
+    {
+        if ((int)n==JSON_SYM_TRUE)
+        {
+            rc=snprintf(&(*c).buf[(*c).pos], (*c).len-(*c).pos, "true");
+            if (rc<0)
+                return(-1);
+            (*c).pos+=rc;
+        }
+        else if ((int)n==JSON_SYM_FALSE)
+        {
+            rc=snprintf(&(*c).buf[(*c).pos], (*c).len-(*c).pos, "false");
+            if (rc<0)
+                return(-1);
+            (*c).pos+=rc;
+        }
+        else
+        {
+            rc=snprintf(&(*c).buf[(*c).pos], (*c).len-(*c).pos, "null");
+            if (rc<0)
+                return(-1);
+            (*c).pos+=rc;
+        }
+    }
+    if (cmd&JSON_CMD_END_OBJ)
+    {    
+        rc=snprintf(&(*c).buf[(*c).pos], (*c).len-(*c).pos, "}");
+        if (rc<0)
+            return(-1);
+        (*c).pos+=rc;
+    }
+    if (cmd&JSON_CMD_END_ARRAY)
+    {
+        rc=snprintf(&(*c).buf[(*c).pos], (*c).len-(*c).pos, "]");
+        if (rc<0)
+            return(-1);
+        (*c).pos+=rc;
+    }
+
+    return(0);
+}
+
+
+
+
 //  
+//  Once again the same method, but now nicer formatting, with colors.
+//
 //  A note on console colors.  The sequeqnce is '%c[%i;%i;%im', with the
 //  special char being 0x1b.  The first value is the attribute, 2nd is
 //  foreground, 3rd is background.  Not all arguments are required.
@@ -243,52 +368,90 @@ int JSON_prettyPrint(int cmd, int r, int d, char *s, double n, void *user)
 
 
 
+//
+//  Parsing from a memory buffer can be done with 'fmemopen' but this
+//  method is not supported on Windows.  This code works for either:
+//
+typedef struct
+{
+    //  If the input is a stream:
+    FILE *str;
+    
+    //  If the input is in memory:
+    char *buf;
+    int len;
+    int pos;
+}
+JSON_DATA;
+
+
+int JSON_fgetc(JSON_DATA *d)
+{
+    int rc=EOF;
+    if ((*d).str) return(fgetc((*d).str));
+    if ((*d).pos<(*d).len) rc=(*d).buf[(*d).pos];
+    (*d).pos+=1;
+    return(rc);
+}
+
+int JSON_ungetc(int c, JSON_DATA *d)
+{
+    if ((*d).str) return(ungetc(c, (*d).str));
+    if ((*d).pos>0)
+        (*d).pos-=1;
+    else
+        return(EOF);
+    return(c);
+}
+
+
+
 //  
 //  Method prototypes for parsing:
 //
-int JSON_ws(FILE *str);
-int JSON_num(FILE *str, double *num);
-int JSON_string(FILE *str, char *s, int l);
-int JSON_symbol(FILE *str, int *sym);
-int JSON_value(FILE *str, int rank, int depth, int (*callback)(int cmd, int r, int d, char *s, double n, void *user), void *user);
-int JSON_array(FILE *str, int rank, int depth, int (*callback)(int cmd, int r, int d, char *s, double n, void *user), void *user);
-int JSON_object(FILE *str, int rank, int depth, int (*callback)(int cmd, int r, int d, char *s, double n, void *user), void *user);
+int JSON_ws    (JSON_DATA *d);
+int JSON_num   (JSON_DATA *d, double *num);
+int JSON_string(JSON_DATA *d, char *s, int l);
+int JSON_symbol(JSON_DATA *d, int *sym);
+int JSON_value (JSON_DATA *d, int rank, int depth, int (*callback)(int cmd, int r, int d, char *s, double n, void *user), void *user);
+int JSON_array (JSON_DATA *d, int rank, int depth, int (*callback)(int cmd, int r, int d, char *s, double n, void *user), void *user);
+int JSON_object(JSON_DATA *d, int rank, int depth, int (*callback)(int cmd, int r, int d, char *s, double n, void *user), void *user);
 
 
 
 
 
 //  Returns number of characters of whitespace consumed:
-int JSON_ws(FILE *str)
+int JSON_ws(JSON_DATA *d)
 {
     int c;
     int n=0;
     do
     {
-        c=fgetc(str);
+        c=JSON_fgetc(d);
         n+=1;
     }
     while (c!=EOF && (c==0x20 || c==0x0a || c==0x0d || c==0x09));
     if (c!=EOF)
-        ungetc(c, str);
+        JSON_ungetc(c, d);
     n-=1;
     return(n);
 }
 
 //  Returns number of chars read if a number was found (ie. >0)
-int JSON_num(FILE *str, double *num)
+int JSON_num(JSON_DATA *d, double *num)
 {
     int c;
     int n=0;
     char ns[JSON_MAX_LEN];
 
     //  Leading '-'
-    c=fgetc(str);
+    c=JSON_fgetc(d);
     if (!(c=='-' || (c>='0' && c<='9')))
     {
         //  It was not a number
         if (c!=EOF)
-            ungetc(c, str);
+            JSON_ungetc(c, d);
         return(n);
     }
 
@@ -297,7 +460,7 @@ int JSON_num(FILE *str, double *num)
     {
         ns[n]=(char)c;
         n+=1;
-        c=fgetc(str);
+        c=JSON_fgetc(d);
     }
     while (c!=EOF && c>='0' && c<='9' && n<JSON_MAX_LEN);
 
@@ -309,7 +472,7 @@ int JSON_num(FILE *str, double *num)
         {
             ns[n]=(char)c;
             n+=1;
-            c=fgetc(str);
+            c=JSON_fgetc(d);
         }
         while (c>='0' && c<='9' && n<JSON_MAX_LEN);
     }
@@ -322,7 +485,7 @@ int JSON_num(FILE *str, double *num)
         n+=1;
 
         //  Leading '+', or '-' is optional:
-        c=fgetc(str);
+        c=JSON_fgetc(d);
         if ((c=='-' || c=='+' || (c>='0' && c<='9')) && n<JSON_MAX_LEN)
         {
             //  After the exponent:
@@ -330,7 +493,7 @@ int JSON_num(FILE *str, double *num)
             {
                 ns[n]=(char)c;
                 n+=1;
-                c=fgetc(str);
+                c=JSON_fgetc(d);
             }
             while (c>='0' && c<='9' && n<JSON_MAX_LEN);
         }
@@ -346,7 +509,7 @@ int JSON_num(FILE *str, double *num)
 
     //  And done!
     if (c!=EOF)
-        ungetc(c, str);
+        JSON_ungetc(c, d);
 
     return(n);
 }
@@ -356,18 +519,18 @@ int JSON_num(FILE *str, double *num)
 //  String.
 //  Copies the string (minus the '""') preserving the control characters
 //  Returns the number of characters actually copied, null-terminates 's'.
-int JSON_string(FILE *str, char *s, int l)
+int JSON_string(JSON_DATA *d, char *s, int l)
 {
     int c;
     int n=0;
     char p;
 
     //  Strings start and end with '"'
-    c=fgetc(str);
+    c=JSON_fgetc(d);
     if (!(c=='"' || c==EOF))
     {
         //  It was not a string
-        ungetc(c, str);
+        JSON_ungetc(c, d);
         return(n);
     }
 
@@ -382,7 +545,7 @@ int JSON_string(FILE *str, char *s, int l)
             s[n-1]=(char)c;
         n+=1;
         p=c;
-        c=fgetc(str);
+        c=JSON_fgetc(d);
     }
     while ( !(c==EOF || (c=='"' && p!='\\')) && n<l);
 
@@ -408,7 +571,7 @@ int JSON_string(FILE *str, char *s, int l)
 //  no symbol was found, or an error code (<0)
 //  If a symbol (rc>0) was found 'sym' is set
 //  NOTE:  technically true/false are lower-case only!
-int JSON_symbol(FILE *str, int *sym)
+int JSON_symbol(JSON_DATA *d, int *sym)
 {
     int c;
     int n=0;
@@ -416,12 +579,12 @@ int JSON_symbol(FILE *str, int *sym)
         //  Since 'ungetc' only works on a single
         //  character, these symbols are read and
         //  compared 1 by 1.
-    c=fgetc(str);
+    c=JSON_fgetc(d);
     if (c=='t' || c=='T')
     {
-        int r=fgetc(str);
-        int u=fgetc(str);
-        int e=fgetc(str);
+        int r=JSON_fgetc(d);
+        int u=JSON_fgetc(d);
+        int e=JSON_fgetc(d);
         n=4;
 
         if (!((r=='r' || r=='R') && (u=='u' || u=='U') && (e=='e' || e=='E')))
@@ -431,10 +594,10 @@ int JSON_symbol(FILE *str, int *sym)
     }
     else if (c=='f' || c=='F')
     {
-        int a=fgetc(str);
-        int l=fgetc(str);
-        int s=fgetc(str);
-        int e=fgetc(str);
+        int a=JSON_fgetc(d);
+        int l=JSON_fgetc(d);
+        int s=JSON_fgetc(d);
+        int e=JSON_fgetc(d);
         n=5;
 
         if (!((a=='a' || a=='A') && (l=='l' || l=='L') && (s=='s' || s=='S') && (e=='e' || e=='E')))
@@ -444,9 +607,9 @@ int JSON_symbol(FILE *str, int *sym)
     }
     else if (c=='n' || c=='U')
     {
-        int u=fgetc(str);
-        int l=fgetc(str);
-        int L=fgetc(str);
+        int u=JSON_fgetc(d);
+        int l=JSON_fgetc(d);
+        int L=JSON_fgetc(d);
         n=4;
 
         if (!((u=='u' || u=='U') && (l=='l' || l=='L') && (L=='l' || L=='L')))
@@ -455,7 +618,7 @@ int JSON_symbol(FILE *str, int *sym)
         (*sym)=JSON_SYM_NULL;
     }
     else if (c!=EOF)
-        ungetc(c, str);
+        JSON_ungetc(c, d);
 
     return(n);
 }
@@ -464,20 +627,20 @@ int JSON_symbol(FILE *str, int *sym)
 //  Value looks for parsing whitespace, then tries to find
 //  either a string, number, object, array, or some predefined 
 //  symbols (true/false)
-int JSON_value(FILE *str, int rank, int depth, int (*callback)(int cmd, int r, int d, char *s, double n, void *user), void *user)
+int JSON_value(JSON_DATA *d, int rank, int depth, int (*callback)(int cmd, int r, int d, char *s, double n, void *user), void *user)
 {
     int n, m;
     
     n=0;
     m=0;
-    n+=JSON_ws(str);
+    n+=JSON_ws(d);
 
     //  Try string first:
     //  (m is oviously '0' still)
     if (m==0)
     {
         char s[JSON_MAX_LEN];
-        m=JSON_string(str, s, JSON_MAX_LEN);
+        m=JSON_string(d, s, JSON_MAX_LEN);
         if (m>0)
         {
             //  Found a string:
@@ -490,7 +653,7 @@ int JSON_value(FILE *str, int rank, int depth, int (*callback)(int cmd, int r, i
     if (m==0)
     {
         double num;
-        m=JSON_num(str, &num);
+        m=JSON_num(d, &num);
         if (m>0)
         {
             //  Found a number:
@@ -503,7 +666,7 @@ int JSON_value(FILE *str, int rank, int depth, int (*callback)(int cmd, int r, i
     if (m==0)
     {
         int sym;
-        m=JSON_symbol(str, &sym);
+        m=JSON_symbol(d, &sym);
         if (m>0)
         {
             //  Symbol: 'sym' was found:
@@ -515,7 +678,7 @@ int JSON_value(FILE *str, int rank, int depth, int (*callback)(int cmd, int r, i
     //  Object:
     if (m==0)
     {
-        m=JSON_object(str, rank, depth, callback, user);
+        m=JSON_object(d, rank, depth, callback, user);
         //  An object was succesfully parsed.
         if (m>0)
             n+=m;
@@ -524,7 +687,7 @@ int JSON_value(FILE *str, int rank, int depth, int (*callback)(int cmd, int r, i
     //  Array:
     if (m==0)
     {
-        m=JSON_array(str, rank, depth, callback, user);
+        m=JSON_array(d, rank, depth, callback, user);
         //  An entire array was parsed.
         if (m>0)
             n+=m;
@@ -532,7 +695,7 @@ int JSON_value(FILE *str, int rank, int depth, int (*callback)(int cmd, int r, i
 
     //  Find something?  Or error?
     if (m>0)
-        n+=JSON_ws(str);
+        n+=JSON_ws(d);
     else if (m<0)
         n=m;
     else
@@ -545,7 +708,7 @@ int JSON_value(FILE *str, int rank, int depth, int (*callback)(int cmd, int r, i
 
 //  Parse an array of comma separated values.
 //  Returns number of chars read, or <0 for error.
-int JSON_array(FILE *str, int rank, int depth, int (*callback)(int cmd, int r, int d, char *s, double n, void *user), void *user)
+int JSON_array(JSON_DATA *d, int rank, int depth, int (*callback)(int cmd, int r, int d, char *s, double n, void *user), void *user)
 {
     int c;
     int n=0;
@@ -554,11 +717,11 @@ int JSON_array(FILE *str, int rank, int depth, int (*callback)(int cmd, int r, i
 
     //  If this is an array, it starts with a bracket:
     //  Note, this 'rank' is the order in the parent where this array is.
-    c=fgetc(str);
+    c=JSON_fgetc(d);
     if (!(c=='[' || c==EOF))
     {
         //  It was not an array 
-        ungetc(c, str);
+        JSON_ungetc(c, d);
         return(n);
     }
     n+=1;
@@ -567,8 +730,8 @@ int JSON_array(FILE *str, int rank, int depth, int (*callback)(int cmd, int r, i
     callback(JSON_CMD_NEW_ARRAY, rank, depth, NULL, 0.0, user);
 
     //  Check for empty array condition:
-    n+=JSON_ws(str);
-    c=fgetc(str);
+    n+=JSON_ws(d);
+    c=JSON_fgetc(d);
     if (c==']')
     {
         //  Empty array.
@@ -577,7 +740,7 @@ int JSON_array(FILE *str, int rank, int depth, int (*callback)(int cmd, int r, i
         return(n);
     }
     else if (c!=EOF)
-        ungetc(c, str);
+        JSON_ungetc(c, d);
 
     //  While there's no more brackets:
     //  Start by pretending there was a comma for conveninece:
@@ -592,7 +755,7 @@ int JSON_array(FILE *str, int rank, int depth, int (*callback)(int cmd, int r, i
             //  Value gets pre, and post whitespace as well:
             //  In this case 'rank=v' represents the position in the
             //  array that this value was found in:
-            m=JSON_value(str, v, depth+1, callback, user);
+            m=JSON_value(d, v, depth+1, callback, user);
             if (m>0)
             {
                 //  Value was found!
@@ -609,7 +772,7 @@ int JSON_array(FILE *str, int rank, int depth, int (*callback)(int cmd, int r, i
         }
 
             //  Comma, or end-of-string.
-        c=fgetc(str);
+        c=JSON_fgetc(d);
         n+=1;
     }
     while (!(c==']' || c==EOF));
@@ -627,7 +790,7 @@ int JSON_array(FILE *str, int rank, int depth, int (*callback)(int cmd, int r, i
 
 //  Parse an object.
 //  Returns number of chars read, or <0 for error.
-int JSON_object(FILE *str, int rank, int depth, int (*callback)(int cmd, int r, int d, char *s, double n, void *user), void *user)
+int JSON_object(JSON_DATA *d, int rank, int depth, int (*callback)(int cmd, int r, int d, char *s, double n, void *user), void *user)
 {
     int c;
     int n=0;
@@ -635,11 +798,11 @@ int JSON_object(FILE *str, int rank, int depth, int (*callback)(int cmd, int r, 
     char p;
 
     //  If this is an array, it starts with a bracket:
-    c=fgetc(str);
+    c=JSON_fgetc(d);
     if (!(c=='{' || c==EOF))
     {
         //  It was not an array 
-        ungetc(c, str);
+        JSON_ungetc(c, d);
         return(n);
     }
     n+=1;
@@ -649,8 +812,8 @@ int JSON_object(FILE *str, int rank, int depth, int (*callback)(int cmd, int r, 
     callback(JSON_CMD_NEW_OBJ, rank, depth, NULL, 0.0, user);
 
     //  Check for empty object condition (which is valid):
-    n+=JSON_ws(str);
-    c=fgetc(str);
+    n+=JSON_ws(d);
+    c=JSON_fgetc(d);
     if (c=='}')
     {
         //  Empty object.
@@ -659,7 +822,7 @@ int JSON_object(FILE *str, int rank, int depth, int (*callback)(int cmd, int r, 
         return(n);
     }
     else if (c!=EOF)
-        ungetc(c, str);
+        JSON_ungetc(c, d);
 
     //  While there's no more brackets:
     //  Start by pretending there was a comma for conveninece:
@@ -676,15 +839,15 @@ int JSON_object(FILE *str, int rank, int depth, int (*callback)(int cmd, int r, 
             //  String:
             //  If a string is less than 2 characters (empty string)
             //  then there has been an error:
-            n+=JSON_ws(str);
-            m=JSON_string(str, s, JSON_MAX_LEN);
+            n+=JSON_ws(d);
+            m=JSON_string(d, s, JSON_MAX_LEN);
             if (m<2)
                 return(m);
             n+=m;
-            n+=JSON_ws(str);
+            n+=JSON_ws(d);
 
             //  The separator:
-            c=fgetc(str);
+            c=JSON_fgetc(d);
             if (c!=':')
                 return(JSON_ERR_SEP);
             n+=1;
@@ -699,7 +862,7 @@ int JSON_object(FILE *str, int rank, int depth, int (*callback)(int cmd, int r, 
             //  for the OLBL, but set to 0 for the value.  This way
             //  an array element value can be separated in a stateless
             //  manner from an object element.
-            m=JSON_value(str, 0, depth+1, callback, user);
+            m=JSON_value(d, 0, depth+1, callback, user);
 
             if (m>0)
             {
@@ -717,7 +880,7 @@ int JSON_object(FILE *str, int rank, int depth, int (*callback)(int cmd, int r, 
         }
 
             //  Comma, or end-of-string.
-        c=fgetc(str);
+        c=JSON_fgetc(d);
         n+=1;
     }
     while (!(c=='}' || c==EOF));
@@ -738,14 +901,14 @@ int JSON_object(FILE *str, int rank, int depth, int (*callback)(int cmd, int r, 
 //  the method quits, although additional values may
 //  exist in the stream.  Additional calls will be needed.
 //
-int JSON_parse(FILE *str, int (*callback)(int cmd, int r, int d, char *s, double n, void *user), void *user)
+int JSON_parseInt(JSON_DATA *d, int (*callback)(int cmd, int r, int d, char *s, double n, void *user), void *user)
 {
     int depth=0;
     int rank=0;
     int rc;
 
     //  Read JSON from the stream given, calling callback.
-    rc=JSON_value(str, rank, depth, callback, user);
+    rc=JSON_value(d, rank, depth, callback, user);
     if (rc<0)
     {
         switch(rc)
@@ -783,6 +946,28 @@ int JSON_parse(FILE *str, int (*callback)(int cmd, int r, int d, char *s, double
         }
     }
     return(rc);
+}
+
+
+
+//  Original JSON_parse on a FILE stream:
+int JSON_parse(FILE *str, int (*callback)(int cmd, int r, int d, char *s, double n, void *user), void *user)
+{
+    JSON_DATA d;
+    memset(&d, 0, sizeof(JSON_DATA));
+    d.str=str;
+    return(JSON_parseInt(&d, callback, user));
+}
+
+
+//  Same but for a buffer of length 'len'
+int JSON_parseMem(char *buf, int len, int (*callback)(int cmd, int r, int d, char *s, double n, void *user), void *user)
+{
+    JSON_DATA d;
+    memset(&d, 0, sizeof(JSON_DATA));
+    d.buf=buf;
+    d.len=len;
+    return(JSON_parseInt(&d, callback, user));
 }
 
 
@@ -1250,7 +1435,24 @@ int JSON_read(int cmd, int count, int depth, char *str, double num, void *user)
  ************************************************************************/
 
 
+//  To make sure 'rc' is set to 0
+int JSON_flattenPrintInit(JSON_FLATTEN_CONF *c, FILE *str, char *buf, int len)
+{
+    memset(c, 0, sizeof(JSON_FLATTEN_CONF));
+    if (str)
+        (*c).str=str;
+    else if (buf)
+    {
+        (*c).buf=buf;
+        (*c).len=len;
+    }
+    else
+        return(-1);
+    return(0);
+}
 
+
+//  Accomodating for both character buffer and stream printing:
 int JSON_flattenPrint(int cmd, int r, int d, char *s, double n, void *user)
 {
     JSON_FLATTEN_CONF *c=(JSON_FLATTEN_CONF*)user;
@@ -1269,20 +1471,58 @@ int JSON_flattenPrint(int cmd, int r, int d, char *s, double n, void *user)
     //  Print the prior stack:
     if (/*d>0 && */cmd&(JSON_CMD_VAL_NUM|JSON_CMD_VAL_STR|JSON_CMD_VAL_SYM))
     {
-        fprintf((*c).str, "\"");
+        //  Print:
+        if ((*c).str) fprintf((*c).str, "\"");
+        else
+        {
+            (*c).rc=snprintf(&(*c).buf[(*c).pos], (*c).len-(*c).pos, "\"");
+            if ((*c).rc>=0) (*c).pos+=(*c).rc;
+        }
+        //  Logic:
         for (i=0; i<d; i+=1)
         {
             if ((*c).strStack[i]!=NULL)
-                fprintf((*c).str, "%s", (*c).strStack[i]);
+            {
+                    //  Print:
+                if ((*c).str) fprintf((*c).str, "%s", (*c).strStack[i]);
+                else
+                {
+                    (*c).rc=snprintf(&(*c).buf[(*c).pos], (*c).len-(*c).pos, "%s", (*c).strStack[i]);
+                    if ((*c).rc>=0) (*c).pos+=(*c).rc;
+                }
+            }
             else
-                fprintf((*c).str, "[%i]", (*c).index[i]);
+            {
+                    //  Print:
+                if ((*c).str) fprintf((*c).str, "[%i]", (*c).index[i]);
+                else
+                {
+                    (*c).rc=snprintf(&(*c).buf[(*c).pos], (*c).len-(*c).pos, "[%i]", (*c).index[i]);
+                    if ((*c).rc>=0) (*c).pos+=(*c).rc;
+                }
+            }
+
             //  This is purely easthetic:  remove the dot before the array index
             //  when previous layer is an object label.
             if (i<d-1)
                 if ((*c).strStack[i]==NULL||(*c).strStack[i+1]!=NULL)
-                    fprintf((*c).str, ".");
+                {
+                    //  Print:
+                    if ((*c).str) fprintf((*c).str, ".");
+                    else
+                    {
+                        (*c).rc=snprintf(&(*c).buf[(*c).pos], (*c).len-(*c).pos, ".");
+                        if ((*c).rc>=0) (*c).pos+=(*c).rc;
+                    }
+                }
         }
-        fprintf((*c).str, "\"");
+        //  Print:
+        if ((*c).str) fprintf((*c).str, "\"");
+        else
+        {
+            (*c).rc=snprintf(&(*c).buf[(*c).pos], (*c).len-(*c).pos, "\"");
+            if ((*c).rc>=0) (*c).pos+=(*c).rc;
+        }
     }
 
     //  All possible commands:
@@ -1300,22 +1540,68 @@ int JSON_flattenPrint(int cmd, int r, int d, char *s, double n, void *user)
     {
         //  Rudimentary 'floor' method to see if the value is true 'int'
         if ((double)((long long int)n)==n)
-            fprintf((*c).str, ":%lli\n", (long long int) n);
+        {
+            //  Print:
+            if ((*c).str) fprintf((*c).str, ":%lli\n", (long long int) n);
+            else
+            {
+                (*c).rc=snprintf(&(*c).buf[(*c).pos], (*c).len-(*c).pos, ":%lli\n", (long long int) n);
+                if ((*c).rc>=0) (*c).pos+=(*c).rc;
+            }
+        }
         else
-            fprintf((*c).str, ":%f\n", n);
+        {
+            //  Print:
+            if ((*c).str) fprintf((*c).str, ":%f\n", n);
+            else
+            {
+                (*c).rc=snprintf(&(*c).buf[(*c).pos], (*c).len-(*c).pos, ":%f\n", n);
+                if ((*c).rc>=0) (*c).pos+=(*c).rc;
+            }
+        }
     }
     if (cmd&JSON_CMD_VAL_STR)
     {
-        fprintf((*c).str, ":\"%s\"\n", s);
+        //  Print:
+        if ((*c).str) fprintf((*c).str, ":\"%s\"\n", s);
+        else
+        {
+            (*c).rc=snprintf(&(*c).buf[(*c).pos], (*c).len-(*c).pos, ":\"%s\"\n", s);
+            if ((*c).rc>=0) (*c).pos+=(*c).rc;
+        }
     }
     if (cmd&JSON_CMD_VAL_SYM)
     {
         if ((int)n==JSON_SYM_TRUE)
-            fprintf((*c).str, ":true\n");
+        {
+            //  Print:
+            if ((*c).str) fprintf((*c).str, ":true\n");
+            else
+            {
+                (*c).rc=snprintf(&(*c).buf[(*c).pos], (*c).len-(*c).pos, ":true\n");
+                if ((*c).rc>=0) (*c).pos+=(*c).rc;
+            }
+        }
         else if ((int)n==JSON_SYM_FALSE)
-            fprintf((*c).str, ":false\n");
+        {
+            //  Print:
+            if ((*c).str) fprintf((*c).str, ":false\n");
+            else
+            {
+                (*c).rc=snprintf(&(*c).buf[(*c).pos], (*c).len-(*c).pos, ":false\n");
+                if ((*c).rc>=0) (*c).pos+=(*c).rc;
+            }
+        }
         else
-            fprintf((*c).str, ":null\n");
+        {
+            //  Print:
+            if ((*c).str) fprintf((*c).str, ":null\n");
+            else
+            {
+                (*c).rc=snprintf(&(*c).buf[(*c).pos], (*c).len-(*c).pos, ":null\n");
+                if ((*c).rc>=0) (*c).pos+=(*c).rc;
+            }
+        }
     }
     /*
     if (cmd&JSON_CMD_END_OBJ)
@@ -1330,10 +1616,96 @@ int JSON_flattenPrint(int cmd, int r, int d, char *s, double n, void *user)
 }
 
 
+
+
+//int JSON_flattenPrint(int cmd, int r, int d, char *s, double n, void *user)
+//{
+//    JSON_FLATTEN_CONF *c=(JSON_FLATTEN_CONF*)user;
+//    int i;
+//
+//    //  Rank of this one in a sequence:
+//    if (d>0)
+//    {
+//        (*c).index[d-1]=r;
+//        if (cmd&JSON_CMD_VAL_OLBL)
+//        {
+//            (*c).strStack[d-1]=s;
+//        }
+//    }
+//
+//    //  Print the prior stack:
+//    if (/*d>0 && */cmd&(JSON_CMD_VAL_NUM|JSON_CMD_VAL_STR|JSON_CMD_VAL_SYM))
+//    {
+//        fprintf((*c).str, "\"");
+//        for (i=0; i<d; i+=1)
+//        {
+//            if ((*c).strStack[i]!=NULL)
+//                fprintf((*c).str, "%s", (*c).strStack[i]);
+//            else
+//                fprintf((*c).str, "[%i]", (*c).index[i]);
+//            //  This is purely easthetic:  remove the dot before the array index
+//            //  when previous layer is an object label.
+//            if (i<d-1)
+//                if ((*c).strStack[i]==NULL||(*c).strStack[i+1]!=NULL)
+//                    fprintf((*c).str, ".");
+//        }
+//        fprintf((*c).str, "\"");
+//    }
+//
+//    //  All possible commands:
+//    if (cmd&JSON_CMD_NEW_ARRAY)
+//    {
+//        (*c).strStack[d]=NULL;
+//    }
+//    /*
+//    if (cmd&JSON_CMD_NEW_OBJ)
+//    {
+//        ///(*c).index[d]=-1;
+//    }
+//    */
+//    if (cmd&JSON_CMD_VAL_NUM)
+//    {
+//        //  Rudimentary 'floor' method to see if the value is true 'int'
+//        if ((double)((long long int)n)==n)
+//            fprintf((*c).str, ":%lli\n", (long long int) n);
+//        else
+//            fprintf((*c).str, ":%f\n", n);
+//    }
+//    if (cmd&JSON_CMD_VAL_STR)
+//    {
+//        fprintf((*c).str, ":\"%s\"\n", s);
+//    }
+//    if (cmd&JSON_CMD_VAL_SYM)
+//    {
+//        if ((int)n==JSON_SYM_TRUE)
+//            fprintf((*c).str, ":true\n");
+//        else if ((int)n==JSON_SYM_FALSE)
+//            fprintf((*c).str, ":false\n");
+//        else
+//            fprintf((*c).str, ":null\n");
+//    }
+//    /*
+//    if (cmd&JSON_CMD_END_OBJ)
+//    {    
+//    }
+//    if (cmd&JSON_CMD_END_ARRAY)
+//    {
+//    }
+//    */
+//
+//    return(0);
+//}
+
+
+
+
+
+
+
 //
 //  Parser for flattened JSON back into structure
 //
-int JSON_flattenParse(FILE *str, int (*callback)(int cmd, int c, int d, char *s, double n, void *user), void *user)
+int JSON_flattenParseInt(JSON_DATA *d, int (*callback)(int cmd, int c, int d, char *s, double n, void *user), void *user)
 {
     int c=0;
     int n=0;
@@ -1347,7 +1719,7 @@ int JSON_flattenParse(FILE *str, int (*callback)(int cmd, int c, int d, char *s,
 
     //  This block reads one line at a time.  Lines are expected
     //  to be of the form:   "label":value\n
-    c=fgetc(str);
+    c=JSON_fgetc(d);
     while(c!=EOF)
     {
         int depth=0;    //  Depth of the parsed label stack
@@ -1358,13 +1730,13 @@ int JSON_flattenParse(FILE *str, int (*callback)(int cmd, int c, int d, char *s,
         char s[JSON_MAX_LEN];
         char *label;
         int8_t type=JSON_FLG_OBJ;
-        ungetc(c, str);
+        JSON_ungetc(c, d);
 
         //  
         //  The flattened label:
         //
-        n+=JSON_ws(str);
-        m=JSON_string(str, s, JSON_MAX_LEN);
+        n+=JSON_ws(d);
+        m=JSON_string(d, s, JSON_MAX_LEN);
         if (m<2)
             return(m);
         n+=m;
@@ -1487,8 +1859,8 @@ int JSON_flattenParse(FILE *str, int (*callback)(int cmd, int c, int d, char *s,
         //  
         //  The separator:
         //
-        n+=JSON_ws(str);
-        c=fgetc(str);
+        n+=JSON_ws(d);
+        c=JSON_fgetc(d);
         if (c!=':')
             return(JSON_ERR_SEP);
         n+=1;
@@ -1502,7 +1874,7 @@ int JSON_flattenParse(FILE *str, int (*callback)(int cmd, int c, int d, char *s,
         rank=0;
         if (type==JSON_FLG_ARR)
             rank=ranks[top];
-        m=JSON_value(str, rank, depth, callback, user);
+        m=JSON_value(d, rank, depth, callback, user);
         if (m>0)
         {
             //  Value was found!
@@ -1513,7 +1885,7 @@ int JSON_flattenParse(FILE *str, int (*callback)(int cmd, int c, int d, char *s,
 
 
         // Next char?
-        c=fgetc(str);
+        c=JSON_fgetc(d);
     }
 
     //
@@ -1538,6 +1910,23 @@ int JSON_flattenParse(FILE *str, int (*callback)(int cmd, int c, int d, char *s,
 
 
 
+int JSON_flattenParse(FILE *str, int (*callback)(int cmd, int c, int d, char *s, double n, void *user), void *user)
+{
+    JSON_DATA d;
+    memset(&d, 0, sizeof(JSON_DATA));
+    d.str=str;
+    return(JSON_flattenParseInt(&d, callback, user));
+}
+
+
+int JSON_flattenParseMem(char *buf, int len, int (*callback)(int cmd, int c, int d, char *s, double n, void *user), void *user)
+{
+    JSON_DATA d;
+    memset(&d, 0, sizeof(JSON_DATA));
+    d.buf=buf;
+    d.len=len;
+    return(JSON_flattenParseInt(&d, callback, user));
+}
 
 
 /************************************************************************
